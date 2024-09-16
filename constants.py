@@ -206,3 +206,6 @@ PARTITIONING_ERROR = \
 # SW RAID
 swraid_query_interval = 10  # seconds
 swraid_speed_write_max = 5000000
+
+# crypto configuration
+MIN_KEY_SIZE = 2048
