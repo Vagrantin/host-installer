@@ -188,7 +188,8 @@ class YumRepository(Repository):
         assert self._targets is not None
         url = self._accessor.url()
         logger.log("URL: " + str(url))
-        with open('/root/yum.conf', 'w') as yum_conf:
+        yum_conf_path = '/root/yum-%s.conf' % (self._identifier,)
+        with open(yum_conf_path, 'w') as yum_conf:
             yum_conf.write(self._yum_conf)
             yum_conf.write("""
 [install]
@@ -206,7 +207,7 @@ baseurl=%s
                 yum_conf.write(repo_config)
 
         self.disableInitrdCreation(mounts['root'])
-        installFromYum(self._targets, mounts, progress_callback, self._cachedir)
+        installFromYum(yum_conf_path, self._targets, mounts, progress_callback, self._cachedir)
         self.enableInitrdCreation()
 
     def installPackages(self, progress_callback, mounts):
@@ -239,12 +240,14 @@ class MainYumRepository(YumRepositoryWithInfo):
     """Represents a Yum repository containing the main XenServer installation."""
 
     INFO_FILENAME = ".treeinfo"
-    _targets = ['@xenserver_base', '@xenserver_dom0']
+    _targets = ['xcp-ng-deps']
 
     def __init__(self, accessor):
         super(MainYumRepository, self).__init__(accessor)
         self._identifier = MAIN_REPOSITORY_NAME
         self.keyfiles = []
+        self._repo_gpg_check = True
+        self._gpg_check = True
 
         def get_name_version(config_parser, section, name_key, vesion_key):
             name, version = None, None
@@ -303,22 +306,23 @@ class MainYumRepository(YumRepositoryWithInfo):
         self._parse_repodata(accessor)
         accessor.finish()
 
-    def _repo_config(self):
+    def _repo_config(self, repogpgcheck_override=None):
         if len(self.keyfiles) > 0:
             # Only deal with a single key for the repo
             keyfile = self.keyfiles[0]
             infh = None
             outfh = None
+            repo_gpg_check = int(self._repo_gpg_check) if repogpgcheck_override is None else repogpgcheck_override
             try:
                 infh = self._accessor.openAddress(keyfile)
                 key_path = os.path.join('/root', os.path.basename(keyfile))
                 outfh = open(key_path, "w")
                 outfh.write(infh.read())
                 return """
-gpgcheck=1
-repo_gpgcheck=1
+gpgcheck=%s
+repo_gpgcheck=%s
 gpgkey=file://%s
-""" % (key_path)
+""" % (int(self._gpg_check), repo_gpg_check, key_path)
             finally:
                 if infh:
                     infh.close()
@@ -354,6 +358,13 @@ gpgkey=file://%s
             branding['product-build'] = self._build_number
         return branding
 
+    def setRepoGpgCheck(self, value):
+        logger.log("%s: setRepoGpgCheck(%s)" % (self, value))
+        self._repo_gpg_check = value
+
+    def setGpgCheck(self, value):
+        logger.log("%s: setGpgCheck(%s)" % (self, value))
+        self._gpg_check = value
 
 class UpdateYumRepository(YumRepositoryWithInfo):
     """Represents a Yum repository containing packages and associated meta data for an update."""
@@ -419,7 +430,8 @@ history_record=false
     def isRepo(cls, accessor):
         if UpdateYumRepository.isRepo(accessor):
             url = accessor.url()
-            with open('/root/yum.conf', 'w') as yum_conf:
+            yum_conf_path = '/root/yum-driverrepo.conf'
+            with open(yum_conf_path, 'w') as yum_conf:
                 yum_conf.write(cls._yum_conf)
                 yum_conf.write("""
 [driverrepo]
@@ -434,7 +446,7 @@ baseurl=%s
                     yum_conf.write("password=%s\n" % (url.getPassword(),))
 
             # Check that the drivers group exists in the repo.
-            rv, out = util.runCmd2(['yum', '-c', '/root/yum.conf',
+            rv, out = util.runCmd2(['yum', '-c', yum_conf_path,
                                     'group', 'summary', 'drivers'], with_stdout=True)
             if rv == 0 and 'Groups: 1\n' in out.strip():
                 return True
@@ -792,11 +804,11 @@ def findRepositoriesOnMedia(drivers=False):
 
     return repos
 
-def installFromYum(targets, mounts, progress_callback, cachedir):
+def installFromYum(yum_conf_path, targets, mounts, progress_callback, cachedir):
         # Use a temporary file to avoid deadlocking
         stderr = tempfile.TemporaryFile()
 
-        yum_command = ['yum', '-c', '/root/yum.conf',
+        yum_command = ['yum', '-c', yum_conf_path,
                        '--installroot', mounts['root'],
                        'install', '-y'] + targets
         logger.log("Running yum: %s" % ' '.join(yum_command))
@@ -830,46 +842,78 @@ def installFromYum(targets, mounts, progress_callback, cachedir):
         rv = p.wait()
         stderr.seek(0)
         stderr = stderr.read()
+        gpg_error_message = None
         if stderr:
             logger.log("YUM stderr: %s" % stderr.strip())
+
+            if ' in import_key_to_pubring' in stderr:
+                gpg_error_message = "Signature key import failed"
+            # add any other instance of uncaught GpgmeError before this like
+            elif 'gpgme.GpgmeError: ' in stderr:
+                gpg_error_message = "Cryptography-related yum crash"
+
+            elif re.search("Couldn't open file [^ ]*/repodata/repomd.xml.asc", stderr):
+                # would otherwise be mistaken for "pubring import" !?
+                gpg_error_message = "No signature on repository metadata"
+            elif 'repomd.xml signature could not be verified' in stderr:
+                gpg_error_message = "Repository signature verification failure"
+
+            else:
+                match = re.search("Public key for ([^ ]*.rpm) is not installed", stderr)
+                if match:
+                    gpg_error_message = "Missing key for %s" % (match.group(1),)
+                match = re.search("Package ([^ ]*.rpm) is not signed", stderr)
+                if match:
+                    gpg_error_message = "Package not signed: %s" % (match.group(1),)
+                match = re.search(r" ([^ ]*): \[Errno [0-9]*\] No more mirrors to try", stderr)
+                if match:
+                    # rpm not found or corrupted/re-signed/etc
+                    gpg_error_rpm_not_found = match.group(1)
+                    gpg_error_message = "Cannot find valid rpm for %s" % (match.group(1),)
 
         if rv:
             if rv > 0:
                 logger.log("Yum exited with %d" % rv)
             else:
                 logger.log("Yum killed by signal %d" % -rv)
-            raise ErrorInstallingPackage("Error installing packages")
+            if gpg_error_message is None:
+                gpg_error_message = "Error installing packages"
+            raise ErrorInstallingPackage(gpg_error_message)
 
         shutil.rmtree(os.path.join(mounts['root'], cachedir))
 
-def installFromRepos(progress_callback, repos, mounts):
-    """Install from a stacked set of repositories"""
-
-    cachedir = "var/cache/yum/installer"
-    for repo in repos:
-        repo._accessor.start()
-
-    try:
-        # Build a yum config
-        with open('/root/yum.conf', 'w') as yum_conf:
-            yum_conf.write(_generateYumConf(cachedir))
-            for repo in repos:
-                url = repo._accessor.url()
-                yum_conf.write("""
+def createMainYumConfig(yum_conf_path, repos, cachedir, repogpgcheck_override=None):
+    with open(yum_conf_path, 'w') as yum_conf:
+        yum_conf.write(_generateYumConf(cachedir))
+        for repo in repos:
+            url = repo._accessor.url()
+            yum_conf.write("""
 [%s]
 name=%s
 baseurl=%s
 """ % (repo.identifier(), repo.identifier(), url.getPlainURL()))
-                username = url.getUsername()
-                if username is not None:
-                    yum_conf.write("username=%s\n" % (url.getUsername(),))
-                password = url.getPassword()
-                if password is not None:
-                    yum_conf.write("password=%s\n" % (url.getPassword(),))
-                repo_config = repo._repo_config()
-                if repo_config is not None:
-                    yum_conf.write(repo_config)
+            username = url.getUsername()
+            if username is not None:
+                yum_conf.write("username=%s\n" % (url.getUsername(),))
+            password = url.getPassword()
+            if password is not None:
+                yum_conf.write("password=%s\n" % (url.getPassword(),))
+            repo_config = repo._repo_config(repogpgcheck_override=repogpgcheck_override)
+            if repo_config is not None:
+                yum_conf.write(repo_config)
 
+def installFromRepos(progress_callback, repos, mounts, kernel_alt, linstor_version):
+    """Install from a stacked set of repositories"""
+
+    logger.log("installFromRepos, kernel_alt=%s" % (kernel_alt,))
+    cachedir = "var/cache/yum/installer"
+    yum_conf_path = '/root/yum.conf'
+
+    for repo in repos:
+        repo._accessor.start()
+
+    try:
+        createMainYumConfig(yum_conf_path, repos, cachedir)
 
         repos[0].disableInitrdCreation(mounts['root'])
         targets = []
@@ -877,9 +921,43 @@ baseurl=%s
             if repo._targets:
                 targets += repo._targets
         targets = list(set(targets))
+        if kernel_alt:
+            targets.append('kernel-alt')
+        if linstor_version:
+            targets.extend(['xcp-ng-release-linstor', 'xcp-ng-linstor',
+                            'linstor-satellite-%s' % linstor_version,
+                            'linstor-controller-%s' % linstor_version,
+                            ])
 
-        installFromYum(targets, mounts, progress_callback, cachedir)
+        installFromYum(yum_conf_path, targets, mounts, progress_callback, cachedir)
         repos[0].enableInitrdCreation()
     finally:
         for repo in repos:
             repo._accessor.finish()
+
+# unlike modern dnf, silly yum in el7 does not hide "0:" in "%{evr}"
+NULL_EPOCH_RE = re.compile(r"(.*)\b0:(.*)$")
+def hideNullEpoch(package):
+    m = re.match(NULL_EPOCH_RE, package)
+    if not m:
+        return package
+    return "".join(m.groups())
+
+def listPackagesFromRepos(repos, rpm_pattern, query_format='%{nevr}'):
+    cachedir = "var/cache/yum/installer"
+    yum_conf_path = '/root/yum-repoquery.conf'
+
+    for repo in repos:
+        repo._accessor.start()
+
+    try:
+        createMainYumConfig(yum_conf_path, repos, cachedir, repogpgcheck_override=0)
+
+        rv, out = util.runCmd2(['repoquery', '-c', yum_conf_path,
+                                '--qf', query_format,
+                                rpm_pattern], with_stdout=True)
+    finally:
+        for repo in repos:
+            repo._accessor.finish()
+
+    return [hideNullEpoch(package) for package in out.split()]
