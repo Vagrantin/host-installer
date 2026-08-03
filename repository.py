@@ -101,6 +101,7 @@ installonlypkgs=
 distroverpkg=xenserver-release
 reposdir=/tmp/repos
 history_record=false
+skip_missing_names_on_install=0
 """ % cachedir
 
 _yumRepositoryId = 1
