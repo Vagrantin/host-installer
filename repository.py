@@ -903,7 +903,7 @@ baseurl=%s
             if repo_config is not None:
                 yum_conf.write(repo_config)
 
-def installFromRepos(progress_callback, repos, mounts, kernel_alt, linstor_version):
+def installFromRepos(progress_callback, repos, mounts, kernel_alt, linstor_version, xcp_ng_linstor):
     """Install from a stacked set of repositories"""
 
     logger.log("installFromRepos, kernel_alt=%s" % (kernel_alt,))
@@ -925,7 +925,8 @@ def installFromRepos(progress_callback, repos, mounts, kernel_alt, linstor_versi
         if kernel_alt:
             targets.append('kernel-alt')
         if linstor_version:
-            targets.extend(['xcp-ng-release-linstor', 'xcp-ng-linstor',
+            targets.extend(['xcp-ng-release-linstor',
+                            xcp_ng_linstor,
                             'linstor-satellite-%s' % linstor_version,
                             'linstor-controller-%s' % linstor_version,
                             ])
@@ -944,7 +945,7 @@ def hideNullEpoch(package):
         return package
     return "".join(m.groups())
 
-def listPackagesFromRepos(repos, rpm_pattern, query_format='%{nevr}'):
+def runRepoquery(repos, args):
     cachedir = "var/cache/yum/installer"
     yum_conf_path = '/root/yum-repoquery.conf'
 
@@ -954,11 +955,13 @@ def listPackagesFromRepos(repos, rpm_pattern, query_format='%{nevr}'):
     try:
         createMainYumConfig(yum_conf_path, repos, cachedir, repogpgcheck_override=0)
 
-        rv, out = util.runCmd2(['repoquery', '-c', yum_conf_path,
-                                '--qf', query_format,
-                                '--show-duplicates', rpm_pattern], with_stdout=True)
+        rv, out = util.runCmd2(['repoquery', '-c', yum_conf_path] + args, with_stdout=True)
     finally:
         for repo in repos:
             repo._accessor.finish()
 
-    return [hideNullEpoch(package) for package in out.split()]
+    return out.split()
+
+def listPackagesFromRepos(repos, rpm_pattern, query_format='%{nevr}'):
+    return [hideNullEpoch(package) for package in
+            runRepoquery(repos, ['--qf', query_format, '--show-duplicates', rpm_pattern])]

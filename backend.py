@@ -169,7 +169,7 @@ def getPrepSequence(ans, interactive):
 
 def getMainRepoSequence(ans, repos):
     seq = []
-    seq.append(Task(repository.installFromRepos, lambda a: [repos] + [a.get('mounts'), a.get('kernel-alt'), a.get('linstor-version')], [],
+    seq.append(Task(repository.installFromRepos, lambda a: [repos] + [a.get('mounts'), a.get('kernel-alt'), a.get('linstor-version'), a.get('xcp_ng_linstor')], [],
                 progress_scale=100,
                 pass_progress_callback=True,
                 progress_text="Installing %s..." % (", ".join([repo.name() for repo in repos]))))
@@ -458,6 +458,17 @@ def performInstallation(answers, ui_package, interactive):
                                "Please make sure your pool is uptodate and use the "
                                "latest dedicated ISO." %
                                (answers['linstor-version'], ', '.join(available_linstor_versions)))
+
+        dependents_on_requested_linstor = repository.runRepoquery(
+            main_repositories,
+            ["--whatrequires", "linstor-satellite-%s.noarch" % (answers['linstor-version'],)])
+        # --what-requires lists all versions, and the most recent is last
+        xcp_ng_linstors = [package for package in dependents_on_requested_linstor
+                           if package.startswith("xcp-ng-linstor-")]
+        if not xcp_ng_linstors:
+            raise RuntimeError("Failed to identify a suitable xcp-ng-linstor version")
+        answers['xcp_ng_linstor'] = xcp_ng_linstors[-1]
+        # FIXME: do we want to make sure that's installable here?
 
     # perform installation:
     prep_seq = getPrepSequence(answers, interactive)
