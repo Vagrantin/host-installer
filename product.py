@@ -41,7 +41,7 @@ def is_rootfs_uefi(mount_point):
     return False
 
 def getLinstorVersion(rootfs_mount):
-    """ Returns the package version of the LINSTOR packages if any """
+    """ Returns the package version of the installed LINSTOR packages if any """
     command = ['rpm', '--root', rootfs_mount, '-q', '--qf', '%{evr}', 'linstor-satellite']
     rc, out = util.runCmd2(command, with_stdout=True)
     if rc != 0:
