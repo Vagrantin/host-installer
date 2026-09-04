@@ -103,13 +103,20 @@ install_size = logs_size + backup_size + root_size + boot_size + swap_size
 # partition by this exact label, and it is also how an upgraded host's
 # regenerated fstab re-finds the partition without needing to know its
 # number. Keep the two in sync.
-iso_size = 8192
+iso_size = 20480
 xcphl_iso_label = "xcphl-iso"
 
-# When the ISO partition is requested, require this much headroom above the
-# existing min_primary_disk_size rather than letting it eat into the local
-# SR's already-thin floor at the previous minimum.
-min_primary_disk_size_with_iso = min_primary_disk_size + (iso_size // 1024)
+# XCP-HL's own documented minimum disk, and the threshold below which the
+# reservation is skipped entirely. Deliberately a flat number rather than
+# min_primary_disk_size + iso_size: that formula only guaranteed the local SR
+# was no smaller than stock XCP-ng's worst case (~4.5GB), which was a
+# defensible floor at an 8GB ISO partition but a useless machine at 20GB.
+# 100GB is roughly 41.5GB of fixed system partitions, 20GB of ISO library and
+# ~38.5GB left for the local SR, i.e. a host that can actually run VMs.
+#
+# Below this the install still succeeds and simply lays out as stock XCP-ng
+# would, with no ISO partition and the whole remainder given to the local SR.
+min_primary_disk_size_with_iso = 100
 
 # filesystems and partitions types:
 bootfs_type = 'vfat'

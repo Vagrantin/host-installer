@@ -210,12 +210,16 @@ Format of 'source' and 'driver-source'
 
       iso-sr=bool
 
-        XCP-HL: reserve a fixed-size partition for a local ISO storage
+        XCP-HL: reserve a 20GB partition for a local ISO storage
         repository, formatted and labelled at install time but registered
         as an SR only at first boot (see xcp-hl-iso-sr-init). Not supported
-        together with sr-at-end=false. Skipped, without failing the install,
-        if the disk lacks enough headroom above the existing minimum disk
-        size to fit it without shrinking the local SR's floor.
+        together with sr-at-end=false.
+
+        Requires a disk of at least 100GB, XCP-HL's documented minimum:
+        roughly 41.5GB of fixed system partitions plus 20GB of ISO library
+        leaves ~38.5GB for the local SR. On a smaller disk the reservation
+        is skipped without failing the install, and the layout is exactly
+        what stock XCP-ng would produce.
 
         Default: True
 
