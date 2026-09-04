@@ -1,0 +1,124 @@
+#!/bin/bash
+#
+# Creates the XCP-HL ISO storage repository at first boot, if the XCP-HL
+# ISO partition (LABEL=xcphl-iso) exists and no ISO SR is already registered.
+#
+# Modeled on /opt/xensource/libexec/storage-init, which creates the primary
+# local SR the same way: wait for xapi/the SM plugin, create the SR, mark
+# done via a ran-* marker in /var/lib/misc so this never re-runs. Started by
+# xcp-hl-iso-store.service, After=xapi-init-complete.target so xapi is known
+# up and the primary SR (created by storage-init.service, which we also
+# order after) already exists.
+#
+# Deliberately never fails the unit: every exit path below is 0, even on
+# error, and every finding is logged. A red unit on a fresh homelab
+# hypervisor is a bad first impression, and there is nothing here worth
+# failing a boot over -- worst case, no ISO SR gets created and the user
+# creates one by hand, exactly as they would on a migrated host.
+
+set -u
+
+XENSOURCE_INVENTORY=/etc/xensource-inventory
+# shellcheck disable=SC1090
+. "${XENSOURCE_INVENTORY}"
+
+TAG="xcp-hl-iso-sr-init"
+LABEL="xcphl-iso"
+MOUNTPOINT="/var/opt/xen/xcp-hl-iso"
+MARKER="/var/lib/misc/ran-xcp-hl-iso-sr"
+
+log() {
+    logger -t "${TAG}" -- "$*"
+    echo "$*"
+}
+
+done_nothing_to_do() {
+    log "$*"
+    touch "${MARKER}"
+    exit 0
+}
+
+# Idempotent: never re-create if we already have.
+if [ -n "$(xe sr-list other-config:xcp-hl-managed=iso-store params=uuid --minimal 2>/dev/null)" ]; then
+    done_nothing_to_do "XCP-HL ISO SR already registered, nothing to do"
+fi
+
+# Respect a pre-existing user-created ISO library: only the built-in
+# XCP-ng Tools SR (other-config:xensource_internal=true) is exempt, since
+# every fresh XCP-ng host already has one and it is not a real ISO library.
+for uuid in $(xe sr-list type=iso params=uuid --minimal 2>/dev/null | tr ',' ' '); do
+    internal=$(xe sr-param-get uuid="${uuid}" param-name=other-config param-key=xensource_internal 2>/dev/null)
+    if [ "${internal}" != "true" ]; then
+        done_nothing_to_do "A user ISO SR (${uuid}) already exists, skipping"
+    fi
+done
+
+# Find the reserved partition. Prefer the inventory key (written at install
+# time by host-installer), fall back to the label directly -- this also
+# covers a host that still has the partition from an earlier XCP-HL install
+# but is missing the inventory key for some reason (e.g. hand-edited).
+DEVICE="${ISO_PARTITION:-}"
+if [ -z "${DEVICE}" ] || [ ! -b "${DEVICE}" ]; then
+    DEVICE=$(blkid -L "${LABEL}" 2>/dev/null)
+fi
+if [ -z "${DEVICE}" ] || [ ! -b "${DEVICE}" ]; then
+    done_nothing_to_do "No partition labelled ${LABEL} found, nothing to do"
+fi
+
+# Cross-check we are not looking at a same-labelled foreign disk (a USB
+# stick, a SAN LUN briefly visible during pool maintenance, a cloned image).
+PARENT_NAME=$(lsblk -no PKNAME "${DEVICE}" 2>/dev/null)
+if [ -n "${PARENT_NAME}" ] && [ -n "${PRIMARY_DISK:-}" ]; then
+    RESOLVED_PRIMARY=$(readlink -f "${PRIMARY_DISK}" 2>/dev/null || echo "${PRIMARY_DISK}")
+    RESOLVED_PARENT=$(readlink -f "/dev/${PARENT_NAME}" 2>/dev/null || echo "/dev/${PARENT_NAME}")
+    if [ "${RESOLVED_PARENT}" != "${RESOLVED_PRIMARY}" ]; then
+        done_nothing_to_do "Partition labelled ${LABEL} (${DEVICE}) is not on PRIMARY_DISK (${PRIMARY_DISK}), refusing to use it"
+    fi
+fi
+
+mkdir -p "${MOUNTPOINT}"
+if ! mountpoint -q "${MOUNTPOINT}"; then
+    # Normally already mounted via fstab (LABEL=xcphl-iso, nofail) well
+    # before this unit runs; this is only a fallback.
+    if ! mount "${DEVICE}" "${MOUNTPOINT}"; then
+        log "Failed to mount ${DEVICE} at ${MOUNTPOINT}, giving up"
+        exit 0
+    fi
+fi
+
+# Wait for the ISO SM plugin to be registered, same wait storage-init uses
+# for the primary SR's own plugin.
+RETRY=0
+MAX_RETRIES=300
+while [ "${RETRY}" -lt "${MAX_RETRIES}" ]; do
+    if [ -n "$(xe sm-list type=iso params=uuid --minimal 2>/dev/null)" ]; then
+        break
+    fi
+    sleep 1
+    RETRY=$((RETRY + 1))
+done
+if [ "${RETRY}" -ge "${MAX_RETRIES}" ]; then
+    log "Timed out waiting for the ISO SM plugin, giving up"
+    exit 0
+fi
+
+SR_OUTPUT=$(xe sr-create \
+    host-uuid="${INSTALLATION_UUID}" \
+    type=iso content-type=iso shared=false \
+    name-label="XCP-HL ISO library" \
+    device-config:location="${MOUNTPOINT}" \
+    device-config:legacy_mode=true 2>&1)
+RC=$?
+if [ "${RC}" -ne 0 ]; then
+    log "xe sr-create failed: ${SR_OUTPUT}"
+    exit 0
+fi
+SR_UUID="${SR_OUTPUT}"
+
+if ! xe sr-param-set uuid="${SR_UUID}" other-config:xcp-hl-managed=iso-store 2>/dev/null; then
+    log "Created SR ${SR_UUID} but failed to tag it with other-config:xcp-hl-managed"
+fi
+
+log "Created XCP-HL ISO SR ${SR_UUID} at ${MOUNTPOINT}"
+touch "${MARKER}"
+exit 0

@@ -366,6 +366,12 @@ class Answerfile:
                                        default=True)
         results['sr-at-end'] = getBoolAttribute(node, ['sr-at-end'], default=True)
 
+        # XCP-HL: reserve a dedicated ISO storage partition on fresh installs.
+        # No numeric size knob: iso_size is a fixed constant, and there is no
+        # existing precedent anywhere in this repo for a numeric answerfile
+        # attribute to model one on.
+        results['iso-sr'] = getBoolAttribute(node, ['iso-sr'], default=True)
+
         # Guest disk(s) (Local SR)
         guest_disks = set()
         if inc_primary:

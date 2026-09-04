@@ -1,0 +1,14 @@
+[Unit]
+Description=Create the XCP-HL ISO storage repository during first boot
+Documentation=https://github.com/Vagrantin/xcp-hl
+Requires=xapi.service xapi-init-complete.target
+After=xapi.service xapi-init-complete.target storage-init.service
+ConditionPathExists=!/var/lib/misc/ran-xcp-hl-iso-sr
+
+[Service]
+Type=oneshot
+ExecStart=/opt/xensource/libexec/xcp-hl-iso-sr-init
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

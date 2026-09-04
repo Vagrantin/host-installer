@@ -60,6 +60,14 @@ install:
 	        tui/installer/screens.py \
 	    $(DESTDIR)$(INSTALLER_DIR)/tui/installer/
 
+ # XCP-HL: ISO-SR first-boot script and unit, staged onto the target root by
+ # installIsoSrFirstboot() in backend.py. Not consumed by rpmbuild today
+ # (see xcp-hl-iso-sr.patch in xcp-ng-ce-iso), kept here for consistency with
+ # the rest of the tree.
+	$(INSTALL) -d $(DESTDIR)$(INSTALLER_DIR)/xcp-hl/
+	$(INSTALL) -m755 xcp-hl/xcp-hl-iso-sr-init $(DESTDIR)$(INSTALLER_DIR)/xcp-hl/
+	$(INSTALL) -m644 xcp-hl/xcp-hl-iso-store.service $(DESTDIR)$(INSTALLER_DIR)/xcp-hl/
+
  # Startup files
 	$(INSTALL) -d \
 	    $(DESTDIR)/etc/init.d \

@@ -93,6 +93,24 @@ logs_free_space = 20
 
 install_size = logs_size + backup_size + root_size + boot_size + swap_size
 
+# XCP-HL: reserved ISO storage partition. Sized and provisioned exactly like
+# the sibling partitions above (fixed size, fresh-install only), but kept
+# outside the local SR's own VG so it works regardless of sr-type.
+#
+# Unlike the *_label constants below, this label is deliberately fixed
+# (not suffixed with disk-label-suffix): it is a cross-repo contract with the
+# XCP-HL first-boot script (xcp-hl/xcp-hl-iso-sr-init), which discovers the
+# partition by this exact label, and it is also how an upgraded host's
+# regenerated fstab re-finds the partition without needing to know its
+# number. Keep the two in sync.
+iso_size = 8192
+xcphl_iso_label = "xcphl-iso"
+
+# When the ISO partition is requested, require this much headroom above the
+# existing min_primary_disk_size rather than letting it eat into the local
+# SR's already-thin floor at the previous minimum.
+min_primary_disk_size_with_iso = min_primary_disk_size + (iso_size // 1024)
+
 # filesystems and partitions types:
 bootfs_type = 'vfat'
 rootfs_type = 'ext3'
@@ -113,6 +131,16 @@ EULA_PATH = "/opt/xensource/installer/EULA"
 INSTALLER_DIR="/opt/xensource/installer"
 timezone_data_file = '/opt/xensource/installer/timezones'
 kbd_data_file = '/opt/xensource/installer/keymaps'
+
+# XCP-HL: first-boot ISO-SR script and unit, staged into the installer
+# filesystem by the Makefile/patch, copied onto the target root at install
+# time by installIsoSrFirstboot() in backend.py.
+ISO_SR_SCRIPT_SRC = "/opt/xensource/installer/xcp-hl/xcp-hl-iso-sr-init"
+ISO_SR_UNIT_SRC = "/opt/xensource/installer/xcp-hl/xcp-hl-iso-store.service"
+ISO_SR_SCRIPT_DEST = "opt/xensource/libexec/xcp-hl-iso-sr-init"
+ISO_SR_UNIT_DEST = "usr/lib/systemd/system/xcp-hl-iso-store.service"
+ISO_SR_UNIT_NAME = "xcp-hl-iso-store.service"
+ISO_SR_MOUNTPOINT = "/var/opt/xen/xcp-hl-iso"
 ANSWERFILE_PATH = '/tmp/answerfile'
 ANSWERFILE_GENERATOR_PATH = '/tmp/answerfile_generator'
 SCRIPTS_DIR = "/tmp/scripts"

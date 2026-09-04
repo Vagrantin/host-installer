@@ -208,6 +208,17 @@ Format of 'source' and 'driver-source'
 
         Default: True
 
+      iso-sr=bool
+
+        XCP-HL: reserve a fixed-size partition for a local ISO storage
+        repository, formatted and labelled at install time but registered
+        as an SR only at first boot (see xcp-hl-iso-sr-init). Not supported
+        together with sr-at-end=false. Skipped, without failing the install,
+        if the disk lacks enough headroom above the existing minimum disk
+        size to fit it without shrinking the local SR's floor.
+
+        Default: True
+
       preserve-first-partition="true|yes|false|no|if-utility"
 
         Defines the action to perform on detecting a non-XS partition

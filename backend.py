@@ -122,8 +122,8 @@ def getPrepSequence(ans, interactive):
             seq.append(Task(stopBlockingSWRAIDDevices, A(ans, 'physical-disks'), []))
 
     seq += [
-        Task(partitionTargetDisk, A(ans, 'primary-disk', 'installation-to-overwrite', 'preserve-first-partition','sr-on-primary', 'target-platform'),
-            ['target-boot-mode', 'primary-partnum', 'backup-partnum', 'storage-partnum', 'boot-partnum', 'logs-partnum', 'swap-partnum'])]
+        Task(partitionTargetDisk, A(ans, 'primary-disk', 'installation-to-overwrite', 'preserve-first-partition','sr-on-primary', 'target-platform', 'iso-sr'),
+            ['target-boot-mode', 'primary-partnum', 'backup-partnum', 'storage-partnum', 'boot-partnum', 'logs-partnum', 'swap-partnum', 'iso-partnum'])]
 
     if ans['ntp-config-method'] in ("dhcp", "default", "manual"):
         seq.append(Task(setTimeNTP, A(ans, 'ntp-servers', 'ntp-config-method'), []))
@@ -132,7 +132,7 @@ def getPrepSequence(ans, interactive):
 
     if ans['install-type'] == INSTALL_TYPE_FRESH:
         seq += [
-            Task(writeDom0DiskPartitions, A(ans, 'primary-disk', 'target-boot-mode', 'boot-partnum', 'primary-partnum', 'backup-partnum', 'logs-partnum', 'swap-partnum', 'storage-partnum', 'sr-at-end'),[]),
+            Task(writeDom0DiskPartitions, A(ans, 'primary-disk', 'target-boot-mode', 'boot-partnum', 'primary-partnum', 'backup-partnum', 'logs-partnum', 'swap-partnum', 'storage-partnum', 'iso-partnum', 'sr-at-end'),[]),
             Task(writeGuestDiskPartitions, A(ans,'primary-disk', 'guest-disks'), [])]
     elif ans['install-type'] == INSTALL_TYPE_REINSTALL:
         seq.append(Task(getUpgrader, A(ans, 'installation-to-overwrite'), ['upgrader']))
@@ -162,7 +162,7 @@ def getPrepSequence(ans, interactive):
                         progress_scale=100,
                         pass_progress_callback=True))
     seq += [
-        Task(createDom0DiskFilesystems, A(ans, 'install-type', 'primary-disk', 'target-boot-mode', 'boot-partnum', 'primary-partnum', 'logs-partnum', 'disk-label-suffix'), []),
+        Task(createDom0DiskFilesystems, A(ans, 'install-type', 'primary-disk', 'target-boot-mode', 'boot-partnum', 'primary-partnum', 'logs-partnum', 'disk-label-suffix', 'iso-partnum'), []),
         Task(mountVolumes, A(ans, 'primary-disk', 'physical-disks', 'boot-partnum', 'primary-partnum', 'logs-partnum', 'cleanup', 'target-boot-mode', 'swraid'), ['mounts', 'cleanup']),
         ]
     return seq
@@ -197,13 +197,13 @@ def getFinalisationSequence(ans):
         Task(writeKeyboardConfiguration, A(ans, 'mounts', 'keymap'), []),
         Task(configureNetworking, A(ans, 'mounts', 'net-admin-interface', 'net-admin-bridge', 'net-admin-configuration', 'manual-hostname', 'manual-nameservers', 'network-hardware', 'preserve-settings', 'network-backend'), []),
         Task(prepareSwapfile, A(ans, 'mounts', 'primary-disk', 'swap-partnum', 'disk-label-suffix'), []),
-        Task(writeFstab, A(ans, 'mounts', 'target-boot-mode', 'primary-disk', 'logs-partnum', 'swap-partnum', 'disk-label-suffix'), []),
+        Task(writeFstab, A(ans, 'mounts', 'target-boot-mode', 'primary-disk', 'logs-partnum', 'swap-partnum', 'disk-label-suffix', 'iso-partnum'), []),
         Task(enableAgent, A(ans, 'mounts', 'network-backend', 'services'), []),
         Task(configureCC, A(ans, 'mounts'), []),
         Task(writeInventory, A(ans, 'installation-uuid', 'control-domain-uuid', 'management-address-type', 'mounts', 'primary-disk',
                                'backup-partnum', 'logs-partnum', 'boot-partnum', 'swap-partnum', 'storage-partnum',
                                'guest-disks', 'net-admin-bridge',
-                               'branding', 'net-admin-configuration', 'host-config', 'install-type'), []),
+                               'branding', 'net-admin-configuration', 'host-config', 'install-type', 'iso-partnum'), []),
         Task(writeXencommons, A(ans, 'control-domain-uuid', 'mounts'), []),
         Task(configureISCSI, A(ans, 'mounts', 'primary-disk'), []),
         Task(mkinitrd, A(ans, 'mounts', 'primary-disk', 'primary-partnum',
@@ -225,6 +225,7 @@ def getFinalisationSequence(ans):
         seq += [
             Task(prepareStorageRepositories, A(ans, 'mounts', 'primary-disk', 'storage-partnum', 'guest-disks', 'sr-type'), []),
             Task(configureSRMultipathing, A(ans, 'mounts', 'primary-disk'), []),
+            Task(installIsoSrFirstboot, A(ans, 'mounts', 'iso-partnum'), []),
             ]
 
     seq.append(Task(setDHCPNTP, A(ans, "mounts", "ntp-config-method"), []))
@@ -413,7 +414,8 @@ def performInstallation(answers, ui_package, interactive):
                           'sr-type': constants.SR_TYPE_LVM,
                           'bootloader-location': constants.BOOT_LOCATION_MBR,
                           'sr-at-end': True,
-                          'sr-on-primary': True})
+                          'sr-on-primary': True,
+                          'iso-sr': True})
 
         logger.log("Updating answers dictionary based on defaults")
 
@@ -657,11 +659,11 @@ def setupSWRAIDDevice(disk_label_suffix, physical_disks, guest_disks):
 # This is attempting to understand the desired layout of the future partitioning
 # based on options passed and status of disk (like partition to retain).
 # This should be used for upgrade or install, not for restore.
-# Returns 'target-boot-mode', 'primary-partnum', 'backup-partnum', 'storage-partnum', 'boot-partnum', 'logs-partnum', 'swap-partnum'
-def partitionTargetDisk(disk, existing, preserve_first_partition, create_sr_part, target_platform):
+# Returns 'target-boot-mode', 'primary-partnum', 'backup-partnum', 'storage-partnum', 'boot-partnum', 'logs-partnum', 'swap-partnum', 'iso-partnum'
+def partitionTargetDisk(disk, existing, preserve_first_partition, create_sr_part, target_platform, create_iso_part):
     logger.log("Installer booted in %s mode" % ("UEFI" if constants.UEFI_INSTALLER else "legacy"))
 
-    (PRIMARY, BACKUP, STORAGE, BOOT, LOGS, SWAP) = list(range(6))
+    (PRIMARY, BACKUP, STORAGE, BOOT, LOGS, SWAP, ISO) = list(range(7))
 
     if target_platform == 'sdx8900':
         constants.boot_size = 2
@@ -676,7 +678,7 @@ def partitionTargetDisk(disk, existing, preserve_first_partition, create_sr_part
 
         primary_part = tool.partitionNumber(existing.root_device)
 
-        part_nums = list(range(primary_part, primary_part+6))
+        part_nums = list(range(primary_part, primary_part+7))
 
         # Determine target install's boot mode and boot partition number
         target_boot_mode = TARGET_BOOT_MODE_LEGACY
@@ -698,10 +700,21 @@ def partitionTargetDisk(disk, existing, preserve_first_partition, create_sr_part
         if not storage_partition:
             part_nums[STORAGE] = 0
 
+        # XCP-HL: detect rather than decide, mirroring STORAGE above. Layout
+        # is only ever decided on fresh install (create_iso_part is not even
+        # consulted here) -- this just finds a partition 7 left over from an
+        # earlier fresh install by our patched installer, so downstream
+        # finalisation tasks (fstab, inventory) can still reference it after
+        # an XCP-ng version upgrade, which does not repartition.
+        iso_partition = tool.getPartition(part_nums[ISO])
+        if not iso_partition:
+            part_nums[ISO] = 0
+
         if target_platform == 'sdx8900':
             part_nums[BACKUP] = 0
             part_nums[LOGS] = 0
             part_nums[SWAP] = 0
+            part_nums[ISO] = 0
 
         return tuple([target_boot_mode] + part_nums)
 
@@ -724,10 +737,22 @@ def partitionTargetDisk(disk, existing, preserve_first_partition, create_sr_part
         if primary_part > 2:
             raise RuntimeError("Installer only supports a single Utility Partition at partition 1, but found Utility Partitions at %s" % str(utilparts))
 
-    part_nums = list(range(primary_part, primary_part+6))
+    part_nums = list(range(primary_part, primary_part+7))
 
     if not create_sr_part:
         part_nums[STORAGE] = -1
+
+    # XCP-HL: reserve the ISO partition. It sits last in the enum (after
+    # SWAP), so unlike STORAGE it never needs to be factored into the BOOT
+    # renumbering below -- skipping it never leaves a gap earlier in the
+    # layout.
+    if not create_iso_part:
+        part_nums[ISO] = -1
+    elif diskutil.blockSizeToGBSize(diskutil.getDiskDeviceSize(disk)) < constants.min_primary_disk_size_with_iso:
+        logger.log("XCP-HL: disk %s has insufficient headroom above the %dGB minimum "
+                   "for an %dMB ISO storage partition; skipping" %
+                   (disk, constants.min_primary_disk_size, constants.iso_size))
+        part_nums[ISO] = -1
 
     part_nums[BOOT] = max(primary_part + 1, part_nums[STORAGE]) + 1
 
@@ -739,6 +764,7 @@ def partitionTargetDisk(disk, existing, preserve_first_partition, create_sr_part
         part_nums[BACKUP] = 0
         part_nums[LOGS] = 0
         part_nums[SWAP] = 0
+        part_nums[ISO] = -1
 
     return tuple([target_boot_mode] + part_nums)
 
@@ -750,7 +776,7 @@ def removeBlockingVGs(disks):
 
 ###
 # Functions to write partition tables to disk
-def writeDom0DiskPartitions(disk, target_boot_mode, boot_partnum, primary_partnum, backup_partnum, logs_partnum, swap_partnum, storage_partnum, sr_at_end):
+def writeDom0DiskPartitions(disk, target_boot_mode, boot_partnum, primary_partnum, backup_partnum, logs_partnum, swap_partnum, storage_partnum, iso_partnum, sr_at_end):
 
     # we really don't want to screw this up...
     assert type(disk) == str
@@ -762,6 +788,13 @@ def writeDom0DiskPartitions(disk, target_boot_mode, boot_partnum, primary_partnu
     # If new partition layout requested: exit if disk is not big enough, otherwise implement it
     elif diskutil.blockSizeToGBSize(diskutil.getDiskDeviceSize(disk)) < constants.min_primary_disk_size:
         raise RuntimeError("The disk %s is smaller than %dGB." % (disk, constants.min_primary_disk_size))
+
+    # XCP-HL: the out-of-order XenRT reshuffle below only knows how to move
+    # (primary, backup, storage); partitionTargetDisk already refuses to
+    # combine the two, this is just the corresponding hard stop if it is
+    # ever called directly with a mismatched pair.
+    if iso_partnum > 0 and not sr_at_end:
+        raise RuntimeError("XCP-HL ISO storage partition is not supported together with sr-at-end=false")
 
     tool = PartitionTool(disk, constants.PARTITION_GPT)
     for num, part in tool.items():
@@ -810,6 +843,14 @@ def writeDom0DiskPartitions(disk, target_boot_mode, boot_partnum, primary_partnu
     # Create swap partition
     if swap_partnum > 0:
         tool.createPartition(tool.ID_LINUX_SWAP, sizeBytes=constants.swap_size * 2**20, number=swap_partnum, order=order)
+        order += 1
+
+    # Create XCP-HL ISO storage partition. Must stay physically before the
+    # LVM partition below, which is deliberately created last and unsized so
+    # it claims everything that remains: inserting a sized partition ahead of
+    # it just leaves it less to claim, no other logic needs to change.
+    if iso_partnum > 0:
+        tool.createPartition(tool.ID_LINUX, sizeBytes=constants.iso_size * 2**20, number=iso_partnum, order=order)
         order += 1
 
     # Create LVM partition
@@ -893,6 +934,43 @@ def prepareStorageRepositories(mounts, primary_disk, storage_partnum, guest_disk
     print("TYPE='%s'" % sr_type, file=fd)
     fd.close()
 
+def installIsoSrFirstboot(mounts, iso_partnum):
+    """XCP-HL: deposit the ISO-SR first-boot script and its systemd unit onto
+    the target root and enable it, mirroring how storage-init.service
+    creates the primary SR. Creating the partition above is not enough:
+    xe sr-create needs xapi, which only runs on the installed host, never in
+    the installer's own ramdisk, so this hands off to first boot the same
+    way prepareStorageRepositories() does for the primary SR.
+
+    A no-op if no ISO partition was reserved this install: nothing to
+    register, so nothing is deposited.
+    """
+    if iso_partnum <= 0:
+        return
+
+    if not os.path.exists(constants.ISO_SR_SCRIPT_SRC) or not os.path.exists(constants.ISO_SR_UNIT_SRC):
+        logger.log("XCP-HL ISO-SR firstboot files not found under %s, skipping" %
+                   os.path.dirname(constants.ISO_SR_SCRIPT_SRC))
+        return
+
+    script_dest = os.path.join(mounts['root'], constants.ISO_SR_SCRIPT_DEST)
+    unit_dest = os.path.join(mounts['root'], constants.ISO_SR_UNIT_DEST)
+    util.assertDir(os.path.dirname(script_dest))
+    util.assertDir(os.path.dirname(unit_dest))
+    shutil.copy(constants.ISO_SR_SCRIPT_SRC, script_dest)
+    os.chmod(script_dest, 0o755)
+    shutil.copy(constants.ISO_SR_UNIT_SRC, unit_dest)
+    os.chmod(unit_dest, 0o644)
+
+    # Enable the unit the same way `systemctl --root=<target> enable` would:
+    # a symlink into multi-user.target.wants/. No running systemd is needed
+    # inside the installer environment for that.
+    wants_dir = os.path.join(mounts['root'], 'etc/systemd/system/multi-user.target.wants')
+    util.assertDir(wants_dir)
+    link_path = os.path.join(wants_dir, constants.ISO_SR_UNIT_NAME)
+    if not os.path.exists(link_path):
+        os.symlink(os.path.join('/', constants.ISO_SR_UNIT_DEST), link_path)
+
 def make_free_space(mount, required):
     """Make required bytes of free space available on mount by removing files,
     oldest first."""
@@ -937,7 +1015,19 @@ def make_free_space(mount, required):
 ###
 # Create dom0 disk file-systems:
 
-def createDom0DiskFilesystems(install_type, disk, target_boot_mode, boot_partnum, primary_partnum, logs_partnum, disk_label_suffix):
+def createDom0DiskFilesystems(install_type, disk, target_boot_mode, boot_partnum, primary_partnum, logs_partnum, disk_label_suffix, iso_partnum):
+    if iso_partnum > 0:
+        partition = partitionDevice(disk, iso_partnum)
+        try:
+            # Deliberately ext4, not rootfs_type (ext3): this partition is
+            # host-installer's concern only until it is formatted. A fixed
+            # label, not disk_label_suffix, is what lets the XCP-HL
+            # first-boot script -- and an upgraded host's regenerated fstab
+            # -- find it again without knowing the partition number.
+            util.mkfs('ext4', partition, ["-L", constants.xcphl_iso_label])
+        except Exception as e:
+            raise RuntimeError("Failed to create XCP-HL ISO storage filesystem: %s" % e)
+
     if target_boot_mode == TARGET_BOOT_MODE_UEFI:
         partition = partitionDevice(disk, boot_partnum)
         try:
@@ -1474,11 +1564,12 @@ def prepareSwapfile(mounts, primary_disk, swap_partnum, disk_label_suffix):
                       'bs=1024', 'count=%d' % (constants.swap_file_size * 1024)])
         util.runCmd2(['chroot', mounts['root'], 'mkswap', constants.swap_file])
 
-def writeFstab(mounts, target_boot_mode, primary_disk, logs_partnum, swap_partnum, disk_label_suffix):
+def writeFstab(mounts, target_boot_mode, primary_disk, logs_partnum, swap_partnum, disk_label_suffix, iso_partnum):
 
     tool = PartitionTool(primary_disk)
     swap_partition = tool.getPartition(swap_partnum)
     logs_partition = tool.getPartition(logs_partnum)
+    iso_partition = tool.getPartition(iso_partnum)
 
     fstab = open(os.path.join(mounts['root'], 'etc/fstab'), "w")
     fstab.write("LABEL=%s    /         %s     defaults   1  1\n" % (rootfs_label%disk_label_suffix, rootfs_type))
@@ -1492,6 +1583,13 @@ def writeFstab(mounts, target_boot_mode, primary_disk, logs_partnum, swap_partnu
             fstab.write("%s          swap      swap   defaults   0  0\n" % (constants.swap_file))
     if logs_partition:
         fstab.write("LABEL=%s    /var/log         %s     defaults   0  2\n" % (logsfs_label%disk_label_suffix, logsfs_type))
+    if iso_partition:
+        # XCP-HL: keyed off the partition actually existing on disk, not off
+        # iso_partnum being set this run, so it is re-added correctly after
+        # an XCP-ng version upgrade even though the upgrade path leaves
+        # iso_partnum at 0 and never calls writeDom0DiskPartitions. nofail so
+        # a missing/failed mount here never blocks boot.
+        fstab.write("LABEL=%s    %s         ext4     defaults,nofail   0  2\n" % (constants.xcphl_iso_label, constants.ISO_SR_MOUNTPOINT))
 
 def enableAgent(mounts, network_backend, services):
     if network_backend == constants.NETWORK_BACKEND_VSWITCH:
@@ -1729,7 +1827,7 @@ def writeXencommons(controlID, mounts):
         f.write(contents)
 
 def writeInventory(installID, controlID, mgmtAddrType, mounts, primary_disk, backup_partnum, logs_partnum, boot_partnum, swap_partnum,
-                   storage_partnum, guest_disks, admin_bridge, branding, admin_config, host_config, install_type):
+                   storage_partnum, guest_disks, admin_bridge, branding, admin_config, host_config, install_type, iso_partnum):
     inv = open(os.path.join(mounts['root'], constants.INVENTORY_FILE), "w")
     if 'product-brand' in branding:
        inv.write("PRODUCT_BRAND='%s'\n" % branding['product-brand'])
@@ -1765,6 +1863,8 @@ def writeInventory(installID, controlID, mgmtAddrType, mounts, primary_disk, bac
         layout += ',SWAP'
     if storage_partnum > 0:
         layout += ',SR'
+    if iso_partnum > 0:
+        layout += ',ISO'
     inv.write("PARTITION_LAYOUT='%s'\n" % layout)
 
     if 'product-build' in branding:
@@ -1773,6 +1873,8 @@ def writeInventory(installID, controlID, mgmtAddrType, mounts, primary_disk, bac
     inv.write("PRIMARY_DISK='%s'\n" % (diskutil.idFromPartition(primary_disk) or primary_disk))
     if backup_partnum > 0:
         inv.write("BACKUP_PARTITION='%s'\n" % (diskutil.idFromPartition(partitionDevice(primary_disk, backup_partnum)) or partitionDevice(primary_disk, backup_partnum)))
+    if iso_partnum > 0:
+        inv.write("ISO_PARTITION='%s'\n" % (diskutil.idFromPartition(partitionDevice(primary_disk, iso_partnum)) or partitionDevice(primary_disk, iso_partnum)))
     inv.write("INSTALLATION_UUID='%s'\n" % installID)
     inv.write("CONTROL_DOMAIN_UUID='%s'\n" % controlID)
     inv.write("DOM0_MEM='%d'\n" % host_config['dom0-mem'])
