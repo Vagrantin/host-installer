@@ -1,9 +1,12 @@
 [Unit]
-Description=Create the XCP-HL ISO storage repository during first boot
+Description=Create and reconcile the XCP-HL ISO storage repository
 Documentation=https://github.com/Vagrantin/xcp-hl
 Requires=xapi.service xapi-init-complete.target
-After=xapi.service xapi-init-complete.target storage-init.service
-ConditionPathExists=!/var/lib/misc/ran-xcp-hl-iso-sr
+After=xapi.service xapi-init-complete.target storage-init.service local-fs.target
+
+# Deliberately no ConditionPathExists guard: this converges on every boot.
+# XAPI does not reliably re-plug this SR's PBD after a restart, so a
+# create-once unit would leave the ISO library detached and unusable.
 
 [Service]
 Type=oneshot
