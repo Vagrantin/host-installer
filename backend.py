@@ -1924,7 +1924,8 @@ def retTrue(*args, **kwargs):
 
 base = YumBase()
 for repo in base.repos.repos.itervalues():
-    if repo.id.startswith('xcp-ng'):
+    # XCP-HL: trust xcp-hl-* repo keys too, or yum prompts on first contact.
+    if repo.id.startswith(('xcp-ng', 'xcp-hl')):
         print("*** Importing GPG key for repository %s - %s" % (repo.id, repo.name))
         base.getKeyForRepo(repo, callback=retTrue)
 """
